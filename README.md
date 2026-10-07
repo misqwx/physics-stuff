@@ -4,41 +4,41 @@ Interactive simulations I created to help my students visualize physics concepts
 
 Rather than treating equations as purely mathematical objects, these simulations allow students to change parameters and immediately observe the resulting changes in the system.
 
-Simulations
+## Simulations
 
-🌀 Magnus Effect
+### 🌀 Magnus Effect
 
 A numerical simulation of a spinning ball moving through air.
 
 The simulation models:
 
-Gravitational force
+- Gravitational force
 
-Air resistance
+- Air resistance
 
-Magnus force caused by spin
+- Magnus force caused by spin
 
-Different launch angles and initial speeds
+- Different launch angles and initial speeds
 
-Positive and negative spin
+- Positive and negative spin
 
 The trajectory is displayed from multiple perspectives, allowing the effect of spin to be compared directly with an otherwise identical trajectory without spin.
 
 The simulation uses scipy.integrate.solve_ivp to numerically solve the equations of motion.
 
-🪀 Oscillator with Drag
+### 🪀 Oscillator with Drag
 
 An interactive simulation of an oscillator subject to drag.
 
 It is designed to help visualize how damping affects oscillatory motion and how changing the relevant physical parameters changes the system's behavior.
 
-📦 Particle Box
+### 📦 Particle Box
 
 A simulation of particles moving inside a box.
 
 It can be used to visualize microscopic particle motion and connect it to macroscopic concepts such as collisions, pressure, and temperature.
 
-Why I Made These
+## Why I Made These
 
 These simulations were originally created as teaching tools.
 
@@ -48,55 +48,55 @@ Change a parameter → run the simulation → observe the result → connect it 
 
 The goal is not to replace theoretical understanding, but to make the connection between equations and physical behavior more tangible.
 
-Technologies
+## Technologies
 
 The simulations are written in Python using:
 
-NumPy — numerical calculations
+- NumPy — numerical calculations
 
-Matplotlib — visualization and interactive controls
+- Matplotlib — visualization and interactive controls
 
-SciPy — numerical integration and solving differential equations
+- SciPy — numerical integration and solving differential equations
 
-What I'm Exploring
+## What I'm Exploring
 
 Through these projects, I'm learning and experimenting with:
 
-Numerical integration
+- Numerical integration
 
-Ordinary differential equations
+- Ordinary differential equations
 
-Computational modeling
+- Computational modeling
 
-Numerical methods
+- Numerical methods
 
-Data visualization
+- Data visualization
 
-Dynamical systems
+- Dynamical systems
 
-Translating physical models into code
+- Translating physical models into code
 
-Future Simulations
+## Future Simulations
 
 This repository will continue to grow as I create more tools for teaching and exploring physics.
 
 Some possible additions:
 
-Coupled oscillators
+- Coupled oscillators
 
-Projectile motion with air resistance
+- Projectile motion with air resistance
 
-Orbital mechanics
+- Orbital mechanics
 
-Wave propagation
+- Wave propagation
 
-Electric and magnetic fields
+- Electric and magnetic fields
 
-Heat diffusion
+- Heat diffusion
 
-Fluid dynamics
+- Fluid dynamics
 
-Statistical mechanics
+- Statistical mechanics
 
 Note
 
