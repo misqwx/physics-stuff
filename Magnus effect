@@ -1,0 +1,121 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+from scipy.integrate import solve_ivp
+
+# --- constants (baseball-ish; change these for a different ball) ---
+g = 9.81          # m/s^2
+RHO = 1.2         # air density, kg/m^3
+M = 0.145         # ball mass, kg
+RADIUS = 0.0366   # ball radius, m
+AREA = np.pi * RADIUS**2
+
+
+def derivs(t, state, Cd, omega):
+    vx, vy, vz = state[3:]
+    speed = np.sqrt(vx * vx + vy * vy + vz * vz)
+
+    k_drag = 0.5 * RHO * Cd * AREA * speed / M
+    ax = -k_drag * vx
+    ay = -k_drag * vy - g
+    az = -k_drag * vz
+
+    if omega != 0 and speed > 1e-9:
+        S = RADIUS * abs(omega) / speed          # spin parameter
+        CL = S / (1 + 2 * S)                     # lift coefficient
+        k_mag = 0.5 * RHO * AREA * CL * speed / M * np.sign(omega)
+        # (0, 1, 0) x (vx, vy, vz) = (vz, 0, -vx)
+        ax += k_mag * vz
+        az -= k_mag * vx
+
+    return [vx, vy, vz, ax, ay, az]
+
+
+def simulate(angle_deg, speed, Cd, omega):
+    th = np.radians(angle_deg)
+    s0 = [0, 0, 0, speed * np.cos(th), speed * np.sin(th), 0]
+
+    def hit_ground(t, s):
+        return s[1]
+    hit_ground.terminal = True
+    hit_ground.direction = -1
+
+    sol = solve_ivp(lambda t, s: derivs(t, s, Cd, omega), (0, 60), s0,
+                    events=hit_ground, max_step=0.02)
+    x, y, z = sol.y[:3]
+    return sol.t, x, y, z
+
+
+# ---------------- figure ----------------
+fig = plt.figure(figsize=(12, 7))
+ax3d = fig.add_subplot(1, 2, 1, projection="3d")
+ax_side = fig.add_subplot(2, 2, 2)
+ax_top = fig.add_subplot(2, 2, 4)
+fig.subplots_adjust(bottom=0.27, left=0.04, right=0.97, top=0.93, hspace=0.4)
+
+line3d, = ax3d.plot([], [], [], lw=2, color="tab:blue", label="with spin")
+ref3d, = ax3d.plot([], [], [], "--", lw=1, color="gray", label="no spin")
+line_side, = ax_side.plot([], [], lw=2, color="tab:blue")
+ref_side, = ax_side.plot([], [], "--", lw=1, color="gray")
+line_top, = ax_top.plot([], [], lw=2, color="tab:blue")
+ref_top, = ax_top.plot([], [], "--", lw=1, color="gray")
+
+ax3d.set_box_aspect((2, 1, 1))
+ax3d.set_xlabel("downrange x (m)")
+ax3d.set_ylabel("sideways z (m)")
+ax3d.set_zlabel("height y (m)")
+ax3d.legend(loc="upper left")
+
+ax_side.set_title("Side view (x vs y)")
+ax_side.set_xlabel("downrange x (m)")
+ax_side.set_ylabel("height y (m)")
+ax_top.set_title("Top view (x vs z)")
+ax_top.set_xlabel("downrange x (m)")
+ax_top.set_ylabel("sideways z (m)")
+ax_top.axhline(0, color="lightgray", lw=0.8)
+
+ax_angle = fig.add_axes([0.2, 0.17, 0.6, 0.03])
+ax_speed = fig.add_axes([0.2, 0.12, 0.6, 0.03])
+ax_cd = fig.add_axes([0.2, 0.07, 0.6, 0.03])
+ax_spin = fig.add_axes([0.2, 0.02, 0.6, 0.03])
+
+s_angle = Slider(ax_angle, "launch angle (deg)", 5, 85, valinit=35)
+s_speed = Slider(ax_speed, "speed (m/s)", 5, 60, valinit=40)
+s_cd = Slider(ax_cd, "drag coeff Cd", 0.0, 1.0, valinit=0.35)
+s_spin = Slider(ax_spin, "spin ω_y (rad/s)", -300, 300, valinit=100)
+
+
+def update(_=None):
+    a, v, cd, w = s_angle.val, s_speed.val, s_cd.val, s_spin.val
+    t, x, y, z = simulate(a, v, cd, w)
+    t0, x0, y0, z0 = simulate(a, v, cd, 0.0)   # same shot, no spin
+
+    line3d.set_data_3d(x, z, y)
+    ref3d.set_data_3d(x0, z0, y0)
+    line_side.set_data(x, y)
+    ref_side.set_data(x0, y0)
+    line_top.set_data(x, z)
+    ref_top.set_data(x0, z0)
+
+    xmax = max(x.max(), x0.max(), 1) * 1.05
+    ymax = max(y.max(), y0.max(), 1) * 1.15
+    zlim = max(np.abs(z).max(), np.abs(z0).max(), 1) * 1.2
+
+    ax3d.set_xlim(0, xmax)
+    ax3d.set_ylim(-zlim, zlim)
+    ax3d.set_zlim(0, ymax)
+    ax_side.set_xlim(0, xmax)
+    ax_side.set_ylim(0, ymax)
+    ax_top.set_xlim(0, xmax)
+    ax_top.set_ylim(-zlim, zlim)
+
+    ax3d.set_title(f"range {x[-1]:.1f} m   sideways drift {z[-1]:+.1f} m   "
+                   f"flight {t[-1]:.1f} s")
+    fig.canvas.draw_idle()
+
+
+for s in (s_angle, s_speed, s_cd, s_spin):
+    s.on_changed(update)
+
+update()
+plt.show()
