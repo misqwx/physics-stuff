@@ -1,0 +1,252 @@
+"""
+Particles in a closed 3D box, coupled to a heat bath ("the surroundings").
+ 
+Units are reduced: particle size sigma = 1, bond energy epsilon = 1, mass = 1, k_B = 1.
+ 
+Model
+  * Particles attract/repel like Lennard-Jones, but the bond strength depends on the
+    bond DIRECTION: bonds along the x/y/z axes are up to (1 + BETA) times stronger.
+    That makes a simple-cubic arrangement the lowest-energy structure (8 particles ->
+    a perfect cube). With plain Lennard-Jones, <=10 particles would form compact
+    clusters, never a cubic lattice.
+  * The bath temperature T is the slider. It is applied with a Langevin thermostat:
+    friction + random kicks, so particles speed up when T is high and slow down when
+    T is low.
+  * Walls are hard and elastic; the box size is fixed.
+ 
+What to try (8 particles, the "magic" number for a cube)
+  * Press "Auto-cool" with a SLOW cooling rate -> the droplet has time to rearrange
+    and ends up as a cubic lattice.
+  * Press "Heat up", then "Quench" (or auto-cool at a FAST rate) -> the particles get
+    stuck in whatever arrangement they had: a disordered (amorphous) cluster.
+ 
+Everything below the model is just plumbing for the sliders and the plot.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Slider, Button
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+ 
+# ---------------- parameters ----------------
+L = 5.0                  # box side
+BETA = 3.0               # strength of the cubic (direction-dependent) bonding
+GAMMA = 4.0              # thermostat friction: how tightly particles follow the bath
+DT = 0.008               # integration time step
+T_MIN, T_MAX = 0.05, 3.0
+T_FREEZE = 0.4           # below this the cluster counts as "frozen" (rough threshold)
+BOND_CUTOFF = 1.4        # particles closer than this count as bonded
+WALL = 0.5               # particle centres stay this far from the walls
+R2MIN = 0.45 ** 2        # safety clamp against overlapping particles
+ 
+# Lowest potential energy for N = 1..10 particles (found by very slow annealing + minimisation).
+# A frozen cluster that reaches this energy is a crystal; one stuck above it is amorphous.
+GROUND_ENERGY = {1: 0.0, 2: -4.00, 3: -8.75, 4: -16.83, 5: -22.53,
+                 6: -31.56, 7: -41.22, 8: -53.34, 9: -59.83, 10: -68.99}
+ 
+ 
+# ---------------- physics ----------------
+def forces(pos):
+    """Pair force F_i = -grad V, with V = eps(n) * LJ(r), eps(n) = 1 + BETA*1.5*(sum n_i^4 - 1/3)."""
+    d = pos[:, None, :] - pos[None, :, :]
+    r2 = np.maximum((d * d).sum(-1), R2MIN)
+    r = np.sqrt(r2)
+    n = d / r[..., None]
+    inv6 = 1.0 / r2 ** 3
+    u = 4.0 * (inv6 * inv6 - inv6)
+    dudr = 4.0 * (-12.0 * inv6 * inv6 + 6.0 * inv6) / r
+    n3 = n ** 3
+    K = (n3 * n).sum(-1)                         # 1 along axes, 1/3 along body diagonals
+    eps = 1.0 + BETA * 1.5 * (K - 1.0 / 3.0)
+    dK = 4.0 * (n3 - n * K[..., None]) / r[..., None]
+    f = -(eps * dudr)[..., None] * n - (u * BETA * 1.5)[..., None] * dK
+    return f.sum(1)
+ 
+ 
+def potential_energy(pos):
+    d = pos[:, None, :] - pos[None, :, :]
+    r2 = np.maximum((d * d).sum(-1), R2MIN)
+    r = np.sqrt(r2)
+    n = d / r[..., None]
+    inv6 = 1.0 / r2 ** 3
+    K = (n ** 4).sum(-1)
+    V = (1.0 + BETA * 1.5 * (K - 1.0 / 3.0)) * 4.0 * (inv6 * inv6 - inv6)
+    np.fill_diagonal(V, 0.0)
+    return 0.5 * V.sum()
+ 
+ 
+def bond_stats(pos):
+    """Return (#bonds, mean cubic alignment of bonds, coordination per particle, bond segments)."""
+    n = len(pos)
+    d = pos[:, None, :] - pos[None, :, :]
+    r = np.sqrt((d * d).sum(-1))
+    coord = (r < BOND_CUTOFF).sum(1) - 1
+    iu, ju = np.triu_indices(n, 1)
+    bonded = r[iu, ju] < BOND_CUTOFF
+    iu, ju = iu[bonded], ju[bonded]
+    if len(iu) == 0:
+        return 0, 0.0, coord, []
+    dirs = d[iu, ju] / r[iu, ju][:, None]
+    align = (dirs ** 4).sum(1).mean()            # 1.0 = all bonds along x/y/z, ~0.6 = random
+    segs = [(pos[i], pos[j]) for i, j in zip(iu, ju)]
+    return len(iu), align, coord, segs
+ 
+ 
+def classify(n, T, align, coord, excess):
+    if n == 1:
+        return "single particle"
+    in_cluster = (coord > 0).mean()
+    need = min(1.8, 0.5 * (n - 1))               # average neighbours needed to count as condensed
+    if in_cluster < 0.75 or coord.mean() < need:
+        return "gas (loose particles)" if T > T_FREEZE else "cold, but not condensed (loose particles)"
+    if T > T_FREEZE:
+        return "liquid cluster"
+    if n < 4:
+        return "frozen: small cluster"
+    tol = 1.0 + 0.5 * (3 * n - 6) * T            # allow for thermal vibration energy
+    if excess > tol:
+        return "FROZEN: amorphous (stuck in a higher-energy arrangement)"
+    return "FROZEN: cubic lattice" if align >= 0.93 else "FROZEN: crystal (lowest-energy shape)"
+ 
+ 
+class Box:
+    def __init__(self, n):
+        self.rng = np.random.default_rng()
+        self.reset(n)
+ 
+    def reset(self, n):
+        self.n = n
+        pts = []
+        while len(pts) < n:
+            p = self.rng.uniform(WALL, L - WALL, 3)
+            if all(np.linalg.norm(p - q) > 1.0 for q in pts):
+                pts.append(p)
+        self.pos = np.array(pts)
+        self.vel = self.rng.normal(0, 1.0, (n, 3))
+        self.F = forces(self.pos)
+ 
+    def run(self, steps, T):
+        """Langevin dynamics (velocity Verlet + friction/noise) at bath temperature T."""
+        c1 = np.exp(-GAMMA * DT)
+        c2 = np.sqrt(T * (1 - c1 * c1))
+        noise = self.rng.standard_normal((steps, self.n, 3)) * c2
+        pos, vel, F = self.pos, self.vel, self.F
+        lo, hi = WALL, L - WALL
+        for k in range(steps):
+            vel += 0.5 * DT * F
+            pos += 0.5 * DT * vel
+            vel *= c1
+            vel += noise[k]
+            pos += 0.5 * DT * vel
+            below, above = pos < lo, pos > hi    # elastic walls
+            pos[below] = 2 * lo - pos[below]
+            pos[above] = 2 * hi - pos[above]
+            vel[below | above] *= -1
+            F = forces(pos)
+            vel += 0.5 * DT * F
+        self.F = F
+ 
+ 
+# ---------------- figure ----------------
+box = Box(8)
+cooling = False
+ 
+fig = plt.figure(figsize=(11, 8.5))
+ax = fig.add_axes([0.0, 0.27, 1.0, 0.72], projection="3d")
+ax.set_xlim(0, L); ax.set_ylim(0, L); ax.set_zlim(0, L)
+ax.set_box_aspect((1, 1, 1))
+ax.set_axis_off()
+ax.view_init(elev=20, azim=-55)
+ 
+corners = np.array([[i, j, k] for i in (0, L) for j in (0, L) for k in (0, L)], float)
+edges = [(a, b) for a in range(8) for b in range(a + 1, 8)
+         if np.count_nonzero(corners[a] != corners[b]) == 1]
+ax.add_collection3d(Line3DCollection([(corners[a], corners[b]) for a, b in edges],
+                                     colors="0.55", linewidths=1))
+ 
+bonds = Line3DCollection([[(0, 0, 0), (0, 0, 0)]], colors="0.25", linewidths=3, alpha=0.8)
+ax.add_collection3d(bonds)
+sc = ax.scatter(box.pos[:, 0], box.pos[:, 1], box.pos[:, 2], s=1500, c=np.zeros(box.n),
+                cmap="coolwarm", vmin=0, vmax=3.5, edgecolors="k", linewidths=0.8,
+                depthshade=False)
+info = fig.text(0.03, 0.95, "", fontsize=12, family="monospace", va="top")
+ 
+ax_N = fig.add_axes([0.22, 0.19, 0.40, 0.03])
+ax_T = fig.add_axes([0.22, 0.14, 0.40, 0.03])
+ax_rate = fig.add_axes([0.22, 0.09, 0.40, 0.03])
+ax_speed = fig.add_axes([0.22, 0.04, 0.40, 0.03])
+s_N = Slider(ax_N, "particles", 1, 10, valinit=8, valstep=1, valfmt="%d")
+s_T = Slider(ax_T, "bath temperature T", T_MIN, T_MAX, valinit=T_MAX, valfmt="%.2f")
+s_rate = Slider(ax_rate, "cooling rate (T per time)", -3.0, 0.0, valinit=-2.4)
+s_speed = Slider(ax_speed, "sim speed (steps/frame)", 5, 300, valinit=80, valstep=5, valfmt="%d")
+ 
+ 
+def show_rate(val=None):
+    s_rate.valtext.set_text(f"{10 ** s_rate.val:.4f}")
+ 
+ 
+show_rate()
+s_rate.on_changed(show_rate)
+ 
+b_cool = Button(fig.add_axes([0.68, 0.17, 0.14, 0.05]), "Auto-cool")
+b_quench = Button(fig.add_axes([0.84, 0.17, 0.14, 0.05]), "Quench")
+b_heat = Button(fig.add_axes([0.68, 0.09, 0.14, 0.05]), "Heat up")
+b_reset = Button(fig.add_axes([0.84, 0.09, 0.14, 0.05]), "New particles")
+ 
+ 
+def set_cooling(on):
+    global cooling
+    cooling = on
+    b_cool.label.set_text("Stop cooling" if on else "Auto-cool")
+ 
+ 
+def on_cool(_):
+    set_cooling(not cooling)
+ 
+ 
+def on_quench(_):                       # instant drop to the lowest temperature
+    set_cooling(False)
+    s_T.set_val(T_MIN)
+ 
+ 
+def on_heat(_):
+    set_cooling(False)
+    s_T.set_val(T_MAX)
+ 
+ 
+def on_reset(_=None):
+    set_cooling(False)
+    box.reset(int(s_N.val))
+ 
+ 
+b_cool.on_clicked(on_cool)
+b_quench.on_clicked(on_quench)
+b_heat.on_clicked(on_heat)
+b_reset.on_clicked(on_reset)
+s_N.on_changed(on_reset)
+ 
+ 
+def frame(_=None):
+    steps = int(s_speed.val)
+    T = s_T.val
+    if cooling:
+        T = max(T_MIN, T - 10 ** s_rate.val * steps * DT)   # rate is per unit simulation time
+        s_T.set_val(T)
+        if T <= T_MIN:
+            set_cooling(False)
+    box.run(steps, T)
+ 
+    p = box.pos
+    sc._offsets3d = (p[:, 0], p[:, 1], p[:, 2])
+    sc.set_array(np.linalg.norm(box.vel, axis=1))             # colour = speed (blue slow, red fast)
+    nb, align, coord, segs = bond_stats(p)
+    bonds.set_segments(segs)
+    excess = potential_energy(p) - GROUND_ENERGY[box.n]
+    state = classify(box.n, T, align, coord, excess)
+    a = f"{align:.2f}" if nb else " - "
+    info.set_text(f"{state}\nT = {T:.2f}   bonds = {nb}   cubic alignment = {a}"
+                  f"   energy above ground state = {excess:.1f}")
+ 
+ 
+anim = FuncAnimation(fig, frame, interval=30, cache_frame_data=False)
+plt.show()
